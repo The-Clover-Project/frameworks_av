@@ -1817,9 +1817,13 @@ audio_io_handle_t AudioPolicyManager::getOutputForDevices(
         if (*flags & AUDIO_OUTPUT_FLAG_MMAP_NOIRQ) {
             ALOGV("MMAP flag set, ignoring VoIP & direct output flags");
         } else {
+            if (*flags & AUDIO_OUTPUT_FLAG_MMAP_NOIRQ) {
+            ALOGV("MMAP flag set, ignoring VoIP & direct output flags");
+        } else {
             *flags = (audio_output_flags_t)(AUDIO_OUTPUT_FLAG_VOIP_RX |
                                            AUDIO_OUTPUT_FLAG_DIRECT);
             ALOGV("Set VoIP and Direct output flags for PCM format");
+        }
         }
     }
 
