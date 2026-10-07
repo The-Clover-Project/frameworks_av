@@ -1539,8 +1539,8 @@ status_t ThreadBase::checkEffectCompatibility_l(
         }
         break;
     case SPATIALIZER:
-        // Global effects (AUDIO_SESSION_OUTPUT_MIX) are supported on spatializer mixer, but only
-        // the spatialized track have global effects applied for now.
+        // Global effects (AUDIO_SESSION_OUTPUT_MIX) process the combined spatialized and
+        // non-spatialized audio after the output stage.
         // Post processing effects (AUDIO_SESSION_OUTPUT_STAGE or AUDIO_SESSION_DEVICE)
         // are supported and added after the spatializer.
         if (sessionId == AUDIO_SESSION_OUTPUT_MIX) {
@@ -3851,27 +3851,25 @@ status_t PlaybackThread::addEffectChain_l(const sp<IAfEffectChain>& chain)
         } else {
             status_t result = INVALID_OPERATION;
             // Buffer configuration for global sessions on a SPATIALIZER thread:
-            // - AUDIO_SESSION_OUTPUT_MIX session uses the mEffectBuffer as input and output buffer
+            // - AUDIO_SESSION_OUTPUT_MIX session uses mPostSpatializerBuffer as input and output
+            //   buffer to process both spatialized and non-spatialized tracks
             // - AUDIO_SESSION_OUTPUT_STAGE session uses the mEffectBuffer as input buffer and
             //   mPostSpatializerBuffer as output buffer
             // - AUDIO_SESSION_DEVICE session uses the mPostSpatializerBuffer as input and output
             //   buffer
-            if (session == AUDIO_SESSION_OUTPUT_MIX || session == AUDIO_SESSION_OUTPUT_STAGE) {
+            if (session == AUDIO_SESSION_OUTPUT_STAGE) {
                 result = mAfThreadCallback->getEffectsFactoryHal()->mirrorBuffer(
                         mEffectBuffer, mEffectBufferSize, &halInBuffer);
                 if (result != OK) return result;
-
-                if (session == AUDIO_SESSION_OUTPUT_MIX) {
-                    halOutBuffer = halInBuffer;
-                }
             }
 
-            if (session == AUDIO_SESSION_OUTPUT_STAGE || session == AUDIO_SESSION_DEVICE) {
+            if (session == AUDIO_SESSION_OUTPUT_STAGE || session == AUDIO_SESSION_OUTPUT_MIX
+                    || session == AUDIO_SESSION_DEVICE) {
                 result = mAfThreadCallback->getEffectsFactoryHal()->mirrorBuffer(
                         mPostSpatializerBuffer, mPostSpatializerBufferSize, &halOutBuffer);
                 if (result != OK) return result;
 
-                if (session == AUDIO_SESSION_DEVICE) {
+                if (session == AUDIO_SESSION_OUTPUT_MIX || session == AUDIO_SESSION_DEVICE) {
                     halInBuffer = halOutBuffer;
                 }
             }
@@ -3935,7 +3933,7 @@ status_t PlaybackThread::addEffectChain_l(const sp<IAfEffectChain>& chain)
     // Effect chain for session AUDIO_SESSION_OUTPUT_STAGE is inserted just before to apply post
     // processing effects specific to an output stream before effects applied to all streams
     // routed to a given device.
-    // Effect chain for session AUDIO_SESSION_OUTPUT_MIX is inserted before
+    // On non-spatializer threads, the effect chain for AUDIO_SESSION_OUTPUT_MIX is inserted before
     // session AUDIO_SESSION_OUTPUT_STAGE to be processed
     // after track specific effects and before output stage.
     // It is therefore mandatory that AUDIO_SESSION_OUTPUT_MIX == 0 and
@@ -3948,11 +3946,22 @@ status_t PlaybackThread::addEffectChain_l(const sp<IAfEffectChain>& chain)
             AUDIO_SESSION_DEVICE < AUDIO_SESSION_OUTPUT_STAGE,
             "audio_session_t constants misdefined");
 
+    // On spatializer threads, run the output stage before the output mix so global effects
+    // process the spatializer output together with tracks mixed directly into that buffer.
+    // Device effects remain last, and other thread types retain their usual order.
+    const auto processingOrder = [this](audio_session_t sessionId) -> audio_session_t {
+        if (mType == SPATIALIZER) {
+            if (sessionId == AUDIO_SESSION_OUTPUT_STAGE) return AUDIO_SESSION_OUTPUT_MIX;
+            if (sessionId == AUDIO_SESSION_OUTPUT_MIX) return AUDIO_SESSION_OUTPUT_STAGE;
+        }
+        return sessionId;
+    };
+
     // Number of chains are small, but the array is sorted so could use std::lower_bound().
     size_t size = mEffectChains.size();
     size_t i = 0;
     for (i = 0; i < size; i++) {
-        if (mEffectChains[i]->sessionId() < session) {
+        if (processingOrder(mEffectChains[i]->sessionId()) < processingOrder(session)) {
             break;
         }
     }
